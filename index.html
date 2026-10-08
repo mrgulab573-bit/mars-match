@@ -978,5 +978,506 @@
         const levelMapModal = document.getElementById('levelMapModal');
         const levelGridEl = document.getElementById('levelGrid');
 
-        function ini 
+        function ini <body>
+  <div id="game-container">
+    <!-- Header Controls -->
+    <header>
+      <div class="info-box">
+        <div class="info-label">Sector</div>
+        <div class="info-value" id="level-display">1</div>
+      </div>
+      <div class="info-box">
+        <div class="info-label">Moves</div>
+        <div class="info-value" id="moves-display">25</div>
+      </div>
+      <div class="info-box">
+        <div class="info-label">Score</div>
+        <div class="info-value" id="score-display">0</div>
+      </div>
+    </header>
+
+    <!-- Objective Bar -->
+    <div id="goals-bar"></div>
+
+    <!-- Main Grid -->
+    <div id="board-wrapper">
+      <div id="grid"></div>
+    </div>
+
+    <!-- Action Buttons -->
+    <footer>
+      <button class="btn btn-secondary" onclick="openMap()">Sectors</button>
+      <button class="btn" onclick="restartLevel()">Restart</button>
+    </footer>
+
+    <!-- Level Map Modal -->
+    <div id="map-modal" class="modal hidden">
+      <div class="modal-title">Mars Mission Map</div>
+      <div class="modal-desc">Select an unlocked sector to begin deployment</div>
+      <div id="level-grid"></div>
+      <button class="btn" onclick="closeMap()">Close</button>
+    </div>
+
+    <!-- Game Over / Victory Modal -->
+    <div id="status-modal" class="modal hidden">
+      <div class="modal-title" id="status-title">Sector Cleared!</div>
+      <div class="modal-desc" id="status-desc">All mission objectives accomplished.</div>
+      <button class="btn" id="status-btn" onclick="nextOrRetry()">Next Sector</button>
+    </div>
+  </div>
+
+  <script>
+    /* Audio Synthesizer (Web Audio API) */
+    const AudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playSound(type) {
+      if (AudioCtx.state === 'suspended') AudioCtx.resume();
+      const osc = AudioCtx.createOscillator();
+      const gain = AudioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(AudioCtx.destination);
+
+      const now = AudioCtx.currentTime;
+
+      if (type === 'swap') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(150, now + 0.08);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+        osc.start(now);
+        osc.stop(now + 0.08);
+      } else if (type === 'match') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(400, now);
+        osc.frequency.exponentialRampToValueAtTime(800, now + 0.15);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      } else if (type === 'special') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, now);
+        osc.frequency.linearRampToValueAtTime(600, now + 0.25);
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.25);
+        osc.start(now);
+        osc.stop(now + 0.25);
+      } else if (type === 'win') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.linearRampToValueAtTime(600, now + 0.4);
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.4);
+        osc.start(now);
+        osc.stop(now + 0.4);
+      }
+    }
+
+    /* Game Configuration & Data */
+    const BOARD_SIZE = 8;
+    const CANDY_TYPES = [
+      { id: 'rover', icon: '🚜' },
+      { id: 'crystal', icon: '💎' },
+      { id: 'water', icon: '💧' },
+      { id: 'satellite', icon: '🛰️' },
+      { id: 'astronaut', icon: '👨‍🚀' },
+      { id: 'rock', icon: '🪨' }
+    ];
+
+    // Generate 50 Level Configs dynamically
+    const LEVELS = [];
+    for (let i = 1; i <= 50; i++) {
+      const moves = Math.max(12, 26 - Math.floor(i / 3));
+      const goals = {};
+      
+      // Assign objectives based on level number
+      if (i % 3 === 1) {
+        goals['rover'] = 10 + i;
+        goals['crystal'] = 8 + Math.floor(i / 2);
+      } else if (i % 3 === 2) {
+        goals['water'] = 12 + i;
+        goals['satellite'] = 10 + Math.floor(i / 2);
+      } else {
+        goals['astronaut'] = 10 + Math.floor(i / 2);
+        goals['rock'] = 10 + i;
+      }
+
+      LEVELS.push({ level: i, moves: moves, goals: goals });
+    }
+
+    /* Game State Variables */
+    let currentLevelIdx = 0;
+    let unlockedLevel = parseInt(localStorage.getItem('mars_unlocked_level') || '1');
+    let board = [];
+    let selectedCell = null;
+    let movesLeft = 0;
+    let score = 0;
+    let currentGoals = {};
+    let isProcessing = false;
+
+    /* Initialize Board & Level */
+    function loadLevel(idx) {
+      currentLevelIdx = idx;
+      const lvl = LEVELS[idx];
+      movesLeft = lvl.moves;
+      score = 0;
+      currentGoals = JSON.parse(JSON.stringify(lvl.goals));
+      selectedCell = null;
+      isProcessing = false;
+
+      document.getElementById('level-display').innerText = lvl.level;
+      document.getElementById('moves-display').innerText = movesLeft;
+      document.getElementById('score-display').innerText = score;
+
+      renderGoals();
+      createValidBoard();
+    }
+
+    function renderGoals() {
+      const container = document.getElementById('goals-bar');
+      container.innerHTML = '';
+      for (const [key, count] of Object.entries(currentGoals)) {
+        const itemData = CANDY_TYPES.find(c => c.id === key);
+        const div = document.createElement('div');
+        div.className = 'goal-item';
+        div.id = `goal-${key}`;
+        div.innerHTML = `<span>${itemData.icon}</span> <span>${count}</span>`;
+        container.appendChild(div);
+      }
+    }
+
+    function updateGoalCount(type, amount = 1) {
+      if (currentGoals[type] !== undefined && currentGoals[type] > 0) {
+        currentGoals[type] = Math.max(0, currentGoals[type] - amount);
+        const el = document.getElementById(`goal-${type}`);
+        if (el) el.children[1].innerText = currentGoals[type];
+      }
+    }
+
+    function createValidBoard() {
+      const gridEl = document.getElementById('grid');
+      gridEl.innerHTML = '';
+      board = [];
+
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        board[r] = [];
+        for (let c = 0; c < BOARD_SIZE; c++) {
+          let candy;
+          do {
+            candy = Math.floor(Math.random() * CANDY_TYPES.length);
+          } while (
+            (r >= 2 && board[r-1][c]?.type === candy && board[r-2][c]?.type === candy) ||
+            (c >= 2 && board[r][c-1]?.type === candy && board[r][c-2]?.type === candy)
+          );
+
+          board[r][c] = { type: candy, special: null };
+          
+          const cellEl = document.createElement('div');
+          cellEl.className = 'cell';
+          cellEl.dataset.r = r;
+          cellEl.dataset.c = c;
+          cellEl.onclick = () => handleCellClick(r, c);
+          gridEl.appendChild(cellEl);
+        }
+      }
+      renderBoard();
+    }
+
+    function renderBoard() {
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+          const cellEl = document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+          const item = board[r][c];
+          cellEl.className = 'cell';
+          cellEl.innerHTML = '';
+
+          if (item) {
+            cellEl.innerText = CANDY_TYPES[item.type].icon;
+            if (item.special) {
+              cellEl.classList.add(item.special);
+              const badge = document.createElement('div');
+              badge.className = 'special-badge';
+              badge.innerText = item.special === 'rocket' ? '🚀' : (item.special === 'bomb' ? '💣' : '💥');
+              cellEl.appendChild(badge);
+            }
+          }
+        }
+      }
+    }
+
+    /* Tap-based Selection & Swap Handler */
+    function handleCellClick(r, c) {
+      if (isProcessing) return;
+
+      if (!selectedCell) {
+        selectedCell = { r, c };
+        document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`).classList.add('selected');
+        playSound('swap');
+      } else {
+        const prevR = selectedCell.r;
+        const prevC = selectedCell.c;
+        document.querySelector(`.cell[data-r="${prevR}"][data-c="${prevC}"]`).classList.remove('selected');
+
+        const isAdjacent = Math.abs(prevR - r) + Math.abs(prevC - c) === 1;
+
+        if (isAdjacent) {
+          attemptSwap(prevR, prevC, r, c);
+        } else {
+          selectedCell = { r, c };
+          document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`).classList.add('selected');
+          playSound('swap');
+        }
+      }
+    }
+
+    async function attemptSwap(r1, c1, r2, c2) {
+      isProcessing = true;
+      swapBoardItems(r1, c1, r2, c2);
+      renderBoard();
+      playSound('swap');
+
+      await new Promise(res => setTimeout(res, 200));
+
+      const matches = findMatches();
+
+      if (matches.length > 0) {
+        movesLeft--;
+        document.getElementById('moves-display').innerText = movesLeft;
+        selectedCell = null;
+        await processMatches();
+      } else {
+        // Revert swap if no match forms
+        swapBoardItems(r1, c1, r2, c2);
+        renderBoard();
+        selectedCell = null;
+        isProcessing = false;
+      }
+    }
+
+    function swapBoardItems(r1, c1, r2, c2) {
+      const temp = board[r1][c1];
+      board[r1][c1] = board[r2][c2];
+      board[r2][c2] = temp;
+    }
+
+    /* Match Detection & Special Candy Spawning */
+    function findMatches() {
+      let matchedCells = [];
+      let matchGroups = [];
+
+      // Horizontal Matches
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        let matchLen = 1;
+        for (let c = 0; c < BOARD_SIZE; c++) {
+          let checkNext = c < BOARD_SIZE - 1 && board[r][c] && board[r][c+1] && board[r][c].type === board[r][c+1].type;
+          if (checkNext) {
+            matchLen++;
+          } else {
+            if (matchLen >= 3) {
+              let group = [];
+              for (let k = 0; k < matchLen; k++) group.push({ r, c: c - k });
+              matchGroups.push(group);
+            }
+            matchLen = 1;
+          }
+        }
+      }
+
+      // Vertical Matches
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        let matchLen = 1;
+        for (let r = 0; r < BOARD_SIZE; r++) {
+          let checkNext = r < BOARD_SIZE - 1 && board[r][c] && board[r+1][c] && board[r][c].type === board[r+1][c].type;
+          if (checkNext) {
+            matchLen++;
+          } else {
+            if (matchLen >= 3) {
+              let group = [];
+              for (let k = 0; k < matchLen; k++) group.push({ r: r - k, c });
+              matchGroups.push(group);
+            }
+            matchLen = 1;
+          }
+        }
+      }
+
+      return matchGroups;
+    }
+
+    /* Core Cascading & Special Effects */
+    async function processMatches() {
+      let groups = findMatches();
+      if (groups.length === 0) {
+        checkGameStatus();
+        isProcessing = false;
+        return;
+      }
+
+      playSound('match');
+
+      for (let group of groups) {
+        let specialToSpawn = null;
+        let originCell = group[0];
+
+        if (group.length >= 5) {
+          specialToSpawn = 'bomb'; // 5 match
+        } else if (group.length === 4) {
+          specialToSpawn = 'rocket'; // 4 match
+        }
+
+        for (let cell of group) {
+          const item = board[cell.r][cell.c];
+          if (!item) continue;
+
+          // Trigger special candy effects
+          if (item.special === 'rocket') {
+            triggerRocket(cell.r, cell.c);
+          } else if (item.special === 'bomb') {
+            triggerBomb(cell.r, cell.c);
+          }
+
+          updateGoalCount(CANDY_TYPES[item.type].id);
+          score += 10;
+          board[cell.r][cell.c] = null;
+        }
+
+        if (specialToSpawn) {
+          board[originCell.r][originCell.c] = {
+            type: Math.floor(Math.random() * CANDY_TYPES.length),
+            special: specialToSpawn
+          };
+          playSound('special');
+        }
+      }
+
+      document.getElementById('score-display').innerText = score;
+      renderBoard();
+      await new Promise(res => setTimeout(res, 250));
+
+      applyGravity();
+      renderBoard();
+      await new Promise(res => setTimeout(res, 250));
+
+      await processMatches();
+    }
+
+    function triggerRocket(r, c) {
+      playSound('special');
+      for (let i = 0; i < BOARD_SIZE; i++) {
+        if (board[r][i]) {
+          updateGoalCount(CANDY_TYPES[board[r][i].type].id);
+          board[r][i] = null;
+          score += 15;
+        }
+        if (board[i][c]) {
+          updateGoalCount(CANDY_TYPES[board[i][c].type].id);
+          board[i][c] = null;
+          score += 15;
+        }
+      }
+    }
+
+    function triggerBomb(r, c) {
+      playSound('special');
+      for (let i = Math.max(0, r - 1); i <= Math.min(BOARD_SIZE - 1, r + 1); i++) {
+        for (let j = Math.max(0, c - 1); j <= Math.min(BOARD_SIZE - 1, c + 1); j++) {
+          if (board[i][j]) {
+            updateGoalCount(CANDY_TYPES[board[i][j].type].id);
+            board[i][j] = null;
+            score += 20;
+          }
+        }
+      }
+    }
+
+    function applyGravity() {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        let emptySpot = BOARD_SIZE - 1;
+        for (let r = BOARD_SIZE - 1; r >= 0; r--) {
+          if (board[r][c] !== null) {
+            board[emptySpot][c] = board[r][c];
+            if (emptySpot !== r) board[r][c] = null;
+            emptySpot--;
+          }
+        }
+        for (let r = emptySpot; r >= 0; r--) {
+          board[r][c] = {
+            type: Math.floor(Math.random() * CANDY_TYPES.length),
+            special: null
+          };
+        }
+      }
+    }
+
+    /* Check Win / Loss Status */
+    function checkGameStatus() {
+      let goalsComplete = Object.values(currentGoals).every(v => v <= 0);
+
+      if (goalsComplete) {
+        playSound('win');
+        if (currentLevelIdx + 1 >= unlockedLevel) {
+          unlockedLevel = Math.min(50, currentLevelIdx + 2);
+          localStorage.setItem('mars_unlocked_level', unlockedLevel);
+        }
+        showStatusModal('Sector Cleared!', 'All sector objectives completed successfully.', 'Next Sector', true);
+      } else if (movesLeft <= 0) {
+        showStatusModal('Mission Failed', 'Out of moves! Sector supply exhausted.', 'Retry Sector', false);
+      }
+    }
+
+    function showStatusModal(title, desc, btnText, isWin) {
+      document.getElementById('status-title').innerText = title;
+      document.getElementById('status-desc').innerText = desc;
+      const btn = document.getElementById('status-btn');
+      btn.innerText = btnText;
+      btn.dataset.win = isWin ? '1' : '0';
+      document.getElementById('status-modal').classList.remove('hidden');
+    }
+
+    function nextOrRetry() {
+      const isWin = document.getElementById('status-btn').dataset.win === '1';
+      document.getElementById('status-modal').classList.add('hidden');
+      if (isWin) {
+        if (currentLevelIdx < LEVELS.length - 1) loadLevel(currentLevelIdx + 1);
+        else openMap();
+      } else {
+        loadLevel(currentLevelIdx);
+      }
+    }
+
+    function restartLevel() {
+      loadLevel(currentLevelIdx);
+    }
+
+    /* Map / Sector Selection Modal */
+    function openMap() {
+      const grid = document.getElementById('level-grid');
+      grid.innerHTML = '';
+      for (let i = 0; i < LEVELS.length; i++) {
+        const div = document.createElement('div');
+        const isUnlocked = i + 1 <= unlockedLevel;
+        div.className = `level-node ${isUnlocked ? 'unlocked' : 'locked'}`;
+        div.innerText = i + 1;
+        if (isUnlocked) {
+          div.onclick = () => {
+            closeMap();
+            loadLevel(i);
+          };
+        }
+        grid.appendChild(div);
+      }
+      document.getElementById('map-modal').classList.remove('hidden');
+    }
+
+    function closeMap() {
+      document.getElementById('map-modal').classList.add('hidden');
+    }
+
+    // Start Game
+    loadLevel(currentLevelIdx);
+  </script>
+</body>
+</html>
+
      
